@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Карта</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script>
+  // Базовый URL локального тайл-сервера передаётся через query: ?base=http://127.0.0.1:XXXX
+  (function(){
+    const m = (location.search||'').match(/[?&]base=([^&]+)/);
+    window.TILE_BASE = m ? decodeURIComponent(m[1]) : '';
+    if (window.TILE_BASE) {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = window.TILE_BASE + '/static/leaflet.css';
+      document.head.appendChild(link);
+    }
+  })();
+</script>
+<style>
+  html, body, #map { height: 100%; margin: 0; padding: 0; background:#11161c; }
+  .leaflet-control-attribution { display: none !important; }
+  /* Поворот SVG — без CSS-перехода: интерполяцию делает JS, иначе будет «двойное» сглаживание и отставание */
+  .plane-icon { transform-origin: center center; }
+  .leaflet-marker-icon.plane-marker { will-change: transform; }
+  /* На software-рендере GPU-композитинг (translateZ(0), will-change) даёт
+     обратный эффект — больше CPU-работы. Не включаем. */
+  .lbl { background: rgba(20,28,38,0.8); color:#e6edf3; padding:2px 6px; border-radius:4px;
+         border:1px solid #2c3a4a; font:600 11px 'Segoe UI',Arial; white-space:nowrap; }
+  .leaflet-tooltip.lbl { box-shadow:none; }
+  .ctxmenu { position:absolute; z-index:9999; background:#1b232c; color:#e6edf3;
+             border:1px solid #2c3a4a; border-radius:8px; padding:6px; min-width:200px;
+             box-shadow:0 8px 24px rgba(0,0,0,0.4); font:13px 'Segoe UI',Arial; }
+  .ctxmenu .item { padding:6px 10px; border-radius:5px; cursor:pointer; }
+  .ctxmenu .item:hover { background:#2a3849; }
+  .ctxmenu .sep { height:1px; background:#2c3a4a; margin:4px 2px; }
+  .ctxmenu .sub { padding-left:12px; color:#9fb4cc; font-size:11px; padding-bottom:2px;}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<script>
+// Динамически грузим Leaflet с локального сервера, чтобы работало без интернета
+function loadScript(src){
+  return new Promise((res, rej)=>{
+    const s=document.createElement('script'); s.src=src; s.onload=res; s.onerror=rej;
+    document.head.appendChild(s);
+  });
+}
+
+let bridge = null;
+let TILE_BASE = window.TILE_BASE || '';
+let map = null;
+
+let baseLayer = null;
+let overlayLayer = null;
+let currentKind = 'sat';
+function setLayer(kind) {
+  currentKind = kind;
+  if (!map) return;
+  if (baseLayer) { map.removeLayer(baseLayer); baseLayer = null; }
+  if (overlayLayer) { map.removeLayer(overlayLayer); overlayLayer = null; }
+  // keepBuffer большой + не очищать старые тайлы → при зуме без интернета
+  // показывается «мыльная» старая картинка вместо серых клеток.
+  // updateWhenIdle:true — не подгружать тайлы во время панорамы, ждать остановки
+  // updateWhenZooming:false — не пытаться загружать промежуточные тайлы при зум-анимации
+  // keepBuffer — сколько тайлов вокруг видимой области держать в DOM (плавнее пан)
+  const common = { maxZoom: 19, attribution:'', updateWhenIdle:true,
+                   keepBuffer:4, crossOrigin:true, errorTileUrl:'',
+                   updateWhenZooming:false };
+
+  // === Кастомный TileLayer с fallback на родительские тайлы ===
+  // Когда нужного тайла нет (offline / 502 от сервера), берём ближайший
+  // существующий тайл меньшего зума и показываем нужный квадрант,
+  // растянутый до 256×256. Картинка «мыльная», но видно где мы.
+  const FallbackTileLayer = L.GridLayer.extend({
+    initialize: function(urlTemplate, options) {
+      this._urlTemplate = urlTemplate;
+      L.setOptions(this, options);
+    },
+    _formatUrl: function(z, x, y) {
+      return this._urlTemplate
+        .replace('{z}', z).replace('{x}', x).replace('{y}', y);
+    },
+    createTile: function(coords, done) {
+      const size = this.getTileSize();
+      const tile = L.DomUtil.create('div', 'leaflet-tile');
+      tile.style.width  = size.x + 'px';
+      tile.style.height = size.y + 'px';
+      tile.style.backgroundRepeat = 'no-repeat';
+
+      const url = this._formatUrl(coords.z, coords.x, coords.y);
+      const img = new Image();
+      img.onload = () => {
+        tile.style.backgroundImage = "url('" + url + "')";
+        tile.style.backgroundSize = size.x + 'px ' + size.y + 'px';
+        tile.style.backgroundPosition = '0 0';
+        done(null, tile);
+      };
+      img.onerror = () => {
+        // Тайла нет — ищем ближайший существующий родительский
+        this._tryParent(tile, coords, size, done, 1);
+      };
+      img.src = url;
+      return tile;
+    },
+    _tryParent: function(tile, coords, size, done, levelsUp) {
+      const z = coords.z - levelsUp;
+      if (z < 0 || levelsUp > 8) { done(null, tile); return; }
+      const factor = Math.pow(2, levelsUp);
+      const px = Math.floor(coords.x / factor);
+      const py = Math.floor(coords.y / factor);
+      const purl = this._formatUrl(z, px, py);
+      const img = new Image();
+      img.onload = () => {
+        // Растягиваем родительский тайл и сдвигаем background, чтобы
+        // видеть только нужный квадрант (тот, что соответствует coords).
+        const offX = (coords.x - px * factor) * size.x;
+        const offY = (coords.y - py * factor) * size.y;
+        tile.style.backgroundImage = "url('" + purl + "')";
+        tile.style.backgroundSize = (size.x * factor) + 'px ' + (size.y * factor) + 'px';
+        tile.style.backgroundPosition = '-' + offX + 'px -' + offY + 'px';
+        // Лёгкая «мыльность» — визуальный признак, что это апскейл
+        tile.style.imageRendering = 'auto';
+        tile.style.opacity = '0.95';
+        done(null, tile);
+      };
+      img.onerror = () => {
+        this._tryParent(tile, coords, size, done, levelsUp + 1);
+      };
+      img.src = purl;
+    }
+  });
+  function fallbackTileLayer(url, options) { return new FallbackTileLayer(url, options); }
+  if (kind === 'sat_labels') {
+    // База — с fallback на родителя; overlay подписей — обычный (на старом
+    // зуме подписи будут просто отсутствовать вместо «мыльных», что корректнее).
+    baseLayer = fallbackTileLayer(TILE_BASE + '/tiles/sat/{z}/{x}/{y}.png', common).addTo(map);
+    overlayLayer = L.tileLayer(TILE_BASE + '/tiles/ref/{z}/{x}/{y}.png',
+        Object.assign({}, common, {opacity:1.0})).addTo(map);
+  } else {
+    baseLayer = fallbackTileLayer(TILE_BASE + '/tiles/' + kind + '/{z}/{x}/{y}.png', common).addTo(map);
+  }
+}
+
+// --- иконка самолёта (SVG, поворачивается по курсу) ---
+function planeIcon(courseDeg) {
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='-24 -24 48 48' width='44' height='44'
+      class='plane-icon' style='transform: rotate(${courseDeg}deg);'>
+      <g>
+        <path d='M0,-20 L4,-6 L20,2 L20,6 L4,4 L3,16 L8,18 L8,21 L0,19 L-8,21 L-8,18 L-3,16 L-4,4 L-20,6 L-20,2 L-4,-6 Z'
+              fill='#ffd54a' stroke='#11161c' stroke-width='1.5' stroke-linejoin='round'/>
+      </g>
+    </svg>`;
+  return L.divIcon({ className:'plane-marker', html: svg, iconSize:[44,44], iconAnchor:[22,22] });
+}
+
+// --- Плавная интерполяция позиции и курса самолёта ---
+// Целевые значения обновляются из Python, а реальная позиция маркера
+// интерполируется в requestAnimationFrame для максимальной плавности.
+let planeTarget = null;   // {lat, lon, course, t}  — куда едем
+let planeCur = null;      // текущее отрисованное состояние
+let planeAnimRAF = null;
+let followPlane = false;  // следить за самолётом (плавно, по интерполированной позиции)
+let lastTrackTs = 0;      // время последнего добавления точки в трек (мс)
+let lastTrackLL = null;   // последняя добавленная в трек координата
+const TRACK_MAX = 20000;          // больший буфер — RAF-кадры частые
+const TRACK_MIN_INTERVAL = 200;   // мс между точками минимум
+const TRACK_MIN_METERS  = 2.0;    // минимальное смещение, чтобы добавить точку
+
+function _haversine(a, b){
+  const R = 6371000;
+  const dLat = (b[0]-a[0]) * Math.PI/180;
+  const dLon = (b[1]-a[1]) * Math.PI/180;
+  const la1 = a[0]*Math.PI/180, la2 = b[0]*Math.PI/180;
+  const h = Math.sin(dLat/2)**2 + Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function _lerpAngle(a, b, k){
+  let d = ((b - a + 540) % 360) - 180;
+  return a + d * k;
+}
+
+function _planeStep(){
+  planeAnimRAF = null;
+  if (!planeTarget || !planeCur || !planeMarker){ return; }
+  // Коэффициент сглаживания: чем ближе к 1 — тем быстрее «догоняет».
+  // 0.18 при 60 FPS даёт мягкое затухание ~150 мс.
+  const k = 0.18;
+  planeCur.lat += (planeTarget.lat - planeCur.lat) * k;
+  planeCur.lon += (planeTarget.lon - planeCur.lon) * k;
+  planeCur.course = _lerpAngle(planeCur.course, planeTarget.course, k);
+  planeMarker.setLatLng([planeCur.lat, planeCur.lon]);
+  // Поворот — через CSS-стиль на SVG (без пересоздания иконки → нет мерцания)
+  const el = planeMarker.getElement();
+  if (el){
+    const svg = el.querySelector('svg.plane-icon');
+    if (svg) svg.style.transform = 'rotate(' + planeCur.course + 'deg)';
+  }
+  // Трек: добавляем точку, только если прошло достаточно времени И смещение
+  // больше порога. Иначе RAF (60 Гц) забивает буфер за минуту.
+  if (showTrack){
+    const now = performance.now();
+    const cur = [planeCur.lat, planeCur.lon];
+    const farEnough = !lastTrackLL || _haversine(lastTrackLL, cur) >= TRACK_MIN_METERS;
+    const longEnough = (now - lastTrackTs) >= TRACK_MIN_INTERVAL;
+    if (farEnough && longEnough){
+      trackPts.push(cur);
+      lastTrackLL = cur;
+      lastTrackTs = now;
+      if (trackPts.length > TRACK_MAX) trackPts.shift();
+      if (!trackLine){
+        trackLine = L.polyline(trackPts, { color:'#ffd54a', weight:2, opacity:0.9 }).addTo(map);
+      } else trackLine.setLatLngs(trackPts);
+    }
+  }
+  // Плавное следование за сглаженной позицией (без анимации Leaflet — мы уже
+  // двигаемся по RAF, поэтому панорама идёт кадр-в-кадр).
+  if (followPlane && map){
+    map.panTo([planeCur.lat, planeCur.lon], { animate:false });
+  }
+  // Если ещё не доехали — продолжаем
+  const dLat = Math.abs(planeTarget.lat - planeCur.lat);
+  const dLon = Math.abs(planeTarget.lon - planeCur.lon);
+  const dC   = Math.abs(((planeTarget.course - planeCur.course + 540) % 360) - 180);
+  if (dLat > 1e-7 || dLon > 1e-7 || dC > 0.1){
+    planeAnimRAF = requestAnimationFrame(_planeStep);
+  }
+}
+
+function setFollow(v){
+  followPlane = !!v;
+  if (followPlane && planeCur && map){
+    map.panTo([planeCur.lat, planeCur.lon], { animate:false });
+    if (!planeAnimRAF) planeAnimRAF = requestAnimationFrame(_planeStep);
+  }
+}
+
+let planeMarker = null;
+let trackLine = null;
+let trackPts = [];
+let showTrack = true;
+
+function setPlane(lat, lon, course) {
+  course = course || 0;
+  if (!planeMarker) {
+    planeMarker = L.marker([lat,lon], { icon: planeIcon(course), interactive:false }).addTo(map);
+    planeCur = { lat, lon, course };
+    planeTarget = { lat, lon, course };
+    return;
+  }
+  // Обновляем только цель — реальное движение делает requestAnimationFrame
+  planeTarget = { lat, lon, course };
+  if (!planeAnimRAF) planeAnimRAF = requestAnimationFrame(_planeStep);
+}
+
+function setShowTrack(v) {
+  showTrack = v;
+  if (!v && trackLine) { map.removeLayer(trackLine); trackLine = null; trackPts = []; lastTrackLL = null; lastTrackTs = 0; }
+}
+
+function clearTrack() {
+  trackPts = [];
+  lastTrackLL = null;
+  lastTrackTs = 0;
+  if (trackLine) { trackLine.setLatLngs([]); }
+}
+
+// --- полигоны ---
+const polyLayers = {};
+function renderPolygons(list) {
+  Object.values(polyLayers).forEach(l => map.removeLayer(l));
+  for (const k in polyLayers) delete polyLayers[k];
+  list.forEach(p => {
+    const color = p.color || '#3ad1ff';
+    const fill  = p.fill_color || color;
+    const l = L.polygon(p.points, { color: color, weight:2,
+                                    fillColor: fill, fillOpacity:0.22 })
+               .bindTooltip(p.name || 'Полигон', {permanent:true, className:'lbl', direction:'center'})
+               .addTo(map);
+    polyLayers[p.id] = l;
+  });
+}
+
+// --- ЗРК (точки и сектора) ---
+const siteLayers = {};
+function sectorPolygon(lat, lon, azStart, azEnd, rangeM) {
+  const pts = [[lat,lon]];
+  // нормализация: идём по часовой от azStart до azEnd
+  let a0 = azStart, a1 = azEnd;
+  let span = (a1 - a0 + 360) % 360;
+  if (span === 0) span = 360;
+  const steps = Math.max(8, Math.ceil(span/3));
+  const R = 6371000;
+  const latR = lat * Math.PI/180;
+  for (let i=0; i<=steps; i++) {
+    const az = (a0 + span * i/steps) * Math.PI/180;
+    const d = rangeM / R;
+    const lat2 = Math.asin(Math.sin(latR)*Math.cos(d) + Math.cos(latR)*Math.sin(d)*Math.cos(az));
+    const lon2 = lon*Math.PI/180 + Math.atan2(Math.sin(az)*Math.sin(d)*Math.cos(latR),
+                                              Math.cos(d) - Math.sin(latR)*Math.sin(lat2));
+    pts.push([lat2*180/Math.PI, lon2*180/Math.PI]);
+  }
+  pts.push([lat,lon]);
+  return pts;
+}
+
+function _lighten(hex, amt){
+  // amt 0..1 — насколько ближе к белому
+  try {
+    const c = hex.replace('#','');
+    const r = parseInt(c.substring(0,2),16);
+    const g = parseInt(c.substring(2,4),16);
+    const b = parseInt(c.substring(4,6),16);
+    const m = (v) => Math.round(v + (255-v)*amt);
+    const h = (v) => v.toString(16).padStart(2,'0');
+    return '#' + h(m(r)) + h(m(g)) + h(m(b));
+  } catch(e){ return hex; }
+}
+function siteDivIcon(color) {
+  color = color || '#ff6a6a';
+  const inner = _lighten(color, 0.45);
+  const html = `<div style="width:14px;height:14px;border-radius:50%;
+      background:${inner};border:2px solid ${color};
+      box-shadow:0 0 0 2px rgba(0,0,0,0.35);"></div>`;
+  return L.divIcon({ className:'', html, iconSize:[18,18], iconAnchor:[9,9] });
+}
+
+function renderSites(list) {
+  Object.values(siteLayers).forEach(g => map.removeLayer(g));
+  for (const k in siteLayers) delete siteLayers[k];
+  list.forEach(s => {
+    const color = s.color || '#ff6a6a';
+    const fill  = s.fill_color || color;
+    const g = L.layerGroup();
+    const sec = sectorPolygon(s.lat, s.lon, s.az_start, s.az_end, (s.range_km||10)*1000);
+    const secLayer = L.polygon(sec, { color: color, weight:1.5,
+                                       fillColor: fill, fillOpacity:0.18 });
+    secLayer.addTo(g);
+    // Draggable-маркер: при перетаскивании двигается и сектор
+    const marker = L.marker([s.lat, s.lon], { icon: siteDivIcon(color), draggable: true })
+      .bindTooltip(`${s.type}${s.label?' · '+s.label:''}`,
+                   {permanent:true, className:'lbl', direction:'top', offset:[0,-10]})
+      .addTo(g);
+    marker.on('drag', (ev) => {
+      const ll = ev.target.getLatLng();
+      const newSec = sectorPolygon(ll.lat, ll.lng, s.az_start, s.az_end, (s.range_km||10)*1000);
+      secLayer.setLatLngs(newSec);
+    });
+    marker.on('dragend', (ev) => {
+      const ll = ev.target.getLatLng();
+      if (bridge && bridge.siteMoved) bridge.siteMoved(s.id, ll.lat, ll.lng);
+    });
+    g.addTo(map);
+    siteLayers[s.id] = g;
+  });
+}
+
+// --- ПКМ контекст-меню ---
+let ctx = null;
+function closeCtx(){ if (ctx){ ctx.remove(); ctx=null; } }
+document.addEventListener('click', closeCtx);
+
+function onCtx(e) {
+  closeCtx();
+  const lat = e.latlng.lat, lon = e.latlng.lng;
+  ctx = document.createElement('div');
+  ctx.className = 'ctxmenu';
+  ctx.style.left = e.originalEvent.clientX + 'px';
+  ctx.style.top  = e.originalEvent.clientY + 'px';
+  ctx.innerHTML = `
+    <div class='sub'>${lat.toFixed(6)}, ${lon.toFixed(6)}</div>
+    <div class='item' data-act='add_point'>Добавить точку в текущий полигон</div>
+    <div class='item' data-act='new_poly'>Новый полигон от этой точки</div>
+    <div class='sep'></div>
+    <div class='sub'>Точка стояния ЗРК</div>
+    <div class='item' data-act='site_Тунгуска'>Тунгуска</div>
+    <div class='item' data-act='site_Стрела-10'>Стрела-10</div>
+    <div class='item' data-act='site_Игла'>Игла</div>
+    <div class='item' data-act='site_Оса'>Оса</div>
+    <div class='item' data-act='site_Бук'>Бук</div>
+    <div class='sep'></div>
+    <div class='item' data-act='copy'>Скопировать координаты</div>
+  `;
+  document.body.appendChild(ctx);
+  ctx.querySelectorAll('.item').forEach(el => el.addEventListener('click', () => {
+    const act = el.dataset.act;
+    if (bridge) bridge.contextAction(act, lat, lon);
+    closeCtx();
+  }));
+  e.originalEvent.preventDefault();
+}
+
+// --- API для Python (заполнится после инициализации) ---
+window.api = {
+  setTileBase: (u) => { TILE_BASE = u; setLayer(currentKind); },
+  setLayer,
+  setPlane: ()=>{}, setShowTrack: ()=>{}, clearTrack: ()=>{},
+  renderPolygons: ()=>{}, renderSites: ()=>{},
+  flyTo: ()=>{}, getBounds: ()=>'{}'
+};
+
+async function boot(){
+  try { await loadScript(TILE_BASE + '/static/leaflet.js'); }
+  catch(e){ document.body.innerHTML = '<div style="color:#e6edf3;padding:24px;font-family:Arial">Не удалось загрузить Leaflet локально. Подключите интернет один раз для первичной загрузки.</div>'; return; }
+
+  map = L.map('map', {
+    zoomControl: true,
+    attributionControl: false,
+    // Canvas-рендерер: на software-режиме (без GPU) он быстрее SVG для длинного
+    // трека и при панораме. Векторы будут чуть «уплывать» только в момент
+    // зум-анимации — это норма для Canvas, мы её отключим (animate:false).
+    preferCanvas: true,
+    // ОТКЛЮЧАЕМ зум-анимацию — на software-композиторе она вызывает рывки
+    // и рассинхрон тайлов с векторами. Зум мгновенный — но без дёрганья.
+    zoomAnimation: false,
+    fadeAnimation: false,
+    markerZoomAnimation: false,
+    zoomSnap: 1,
+    zoomDelta: 1,
+    wheelDebounceTime: 40,
+    wheelPxPerZoomLevel: 120,
+    inertia: true,
+    inertiaDeceleration: 3000,
+    easeLinearity: 0.2
+  }).setView([47.259, 11.334], 14);
+
+  window.api.setPlane = setPlane;
+  window.api.setShowTrack = setShowTrack;
+  window.api.clearTrack = clearTrack;
+  window.api.renderPolygons = renderPolygons;
+  window.api.renderSites = renderSites;
+  // flyTo на software-рендере = тормоза. Используем мгновенный setView.
+  window.api.flyTo = (lat,lon,z) => map.setView([lat,lon], z||map.getZoom(), { animate:false });
+  // Без анимации! Иначе при следовании (10+ Гц) перекрывающиеся pan-анимации
+  // вызывают мерцающий полупрозрачный прямоугольник поверх тайлов.
+  window.api.centerOn = (lat,lon) => map.panTo([lat,lon], { animate:false });
+  window.api.setFollow = setFollow;
+  window.api.getBounds = () => {
+    const b = map.getBounds();
+    return JSON.stringify({s:b.getSouth(), n:b.getNorth(), w:b.getWest(), e:b.getEast(), z: map.getZoom()});
+  };
+
+  // ПКМ-меню после создания карты
+  map.on('movestart zoomstart', closeCtx);
+  map.on('contextmenu', onCtx);
+
+  setLayer(currentKind);
+
+  new QWebChannel(qt.webChannelTransport, function(channel) {
+    bridge = channel.objects.bridge;
+    bridge.ready();
+  });
+}
+boot();
+</script>
+</body>
+</html>
