@@ -28,5 +28,3 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# PyInstaller
-*.spec
