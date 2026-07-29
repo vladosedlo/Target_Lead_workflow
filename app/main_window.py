@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QMainWindow, QDockWidget, QWidget, QVBoxLayout,
                               QInputDialog, QMessageBox, QComboBox, QLabel, QCheckBox,
                               QGroupBox, QFormLayout, QDoubleSpinBox, QSpinBox,
                               QFileDialog, QProgressDialog, QApplication, QToolBar,
-                              QScrollArea, QSizePolicy)
+                              QScrollArea, QSizePolicy, QAbstractSpinBox)
 
 from .avionics import AvionicsWidget
 from .indicators import IndicatorsPanel
@@ -24,6 +24,19 @@ from .tile_server import (TileServer, download_area, PROVIDERS,
                           preload_world, ensure_leaflet, set_provider_set)
 from . import storage
 from .geo import in_sector
+
+
+class SteadyDoubleSpinBox(QDoubleSpinBox):
+    """QDoubleSpinBox без «залипающих» стрелок.
+
+    Баг Qt: при пропущенном mouseRelease (перерисовка, потеря фокуса,
+    прокрутка внутри QScrollArea) кэш stepEnabled застревает и одна из
+    кнопок (вверх/вниз) перестаёт работать. Всегда разрешаем оба
+    направления — Qt сам клампит значение по setRange().
+    """
+    def stepEnabled(self):
+        return (QAbstractSpinBox.StepUpEnabled |
+                QAbstractSpinBox.StepDownEnabled)
 
 
 LAYER_LABELS = {
@@ -92,6 +105,7 @@ class MainWindow(QMainWindow):
         self.map_view.map_ready.connect(self._on_map_ready)
         self.map_view.context_action.connect(self._on_map_ctx)
         self.map_view.site_moved.connect(self._on_site_moved)
+        self.map_view.site_selected.connect(self._on_site_selected_on_map)
 
         # Объекты (полигоны/ЗРК)
         self.side_panel = self._build_side_panel()
@@ -390,6 +404,7 @@ class MainWindow(QMainWindow):
         gpl = QVBoxLayout(gp)
         self.poly_list = QListWidget()
         self.poly_list.itemSelectionChanged.connect(self._poly_selected)
+        self.poly_list.itemClicked.connect(lambda _it: self._center_on_polygon())
         gpl.addWidget(self.poly_list)
         row = QHBoxLayout()
         b_new = QPushButton("Новый"); b_new.clicked.connect(self._new_polygon)
@@ -427,11 +442,11 @@ class MainWindow(QMainWindow):
         form = QFormLayout()
         self.s_type = QComboBox(); self.s_type.addItems(["Тунгуска","Стрела-10","Игла","Оса","Бук"])
         self.s_label = QSpinBox(); self.s_label.setRange(0, 9999)
-        self.s_lat = QDoubleSpinBox(); self.s_lat.setRange(-90, 90); self.s_lat.setDecimals(7); self.s_lat.setSingleStep(0.0001); self.s_lat.setSuffix("°")
-        self.s_lon = QDoubleSpinBox(); self.s_lon.setRange(-180, 180); self.s_lon.setDecimals(7); self.s_lon.setSingleStep(0.0001); self.s_lon.setSuffix("°")
-        self.s_az0 = QDoubleSpinBox(); self.s_az0.setRange(0,360); self.s_az0.setSuffix("°")
-        self.s_az1 = QDoubleSpinBox(); self.s_az1.setRange(0,360); self.s_az1.setSuffix("°")
-        self.s_range = QDoubleSpinBox(); self.s_range.setRange(0.1,50); self.s_range.setValue(10); self.s_range.setSuffix(" км")
+        self.s_lat = SteadyDoubleSpinBox(); self.s_lat.setRange(-90, 90); self.s_lat.setDecimals(7); self.s_lat.setSingleStep(0.0001); self.s_lat.setSuffix("°")
+        self.s_lon = SteadyDoubleSpinBox(); self.s_lon.setRange(-180, 180); self.s_lon.setDecimals(7); self.s_lon.setSingleStep(0.0001); self.s_lon.setSuffix("°")
+        self.s_az0 = SteadyDoubleSpinBox(); self.s_az0.setRange(0,360); self.s_az0.setSuffix("°")
+        self.s_az1 = SteadyDoubleSpinBox(); self.s_az1.setRange(0,360); self.s_az1.setSuffix("°")
+        self.s_range = SteadyDoubleSpinBox(); self.s_range.setRange(0.1,50); self.s_range.setValue(10); self.s_range.setSuffix(" км")
         form.addRow("Тип:", self.s_type)
         form.addRow("Метка №:", self.s_label)
         form.addRow("Широта:", self.s_lat)
@@ -566,6 +581,16 @@ class MainWindow(QMainWindow):
         self._current_polygon_id = p["id"] if p else None
         self._refresh_poly_points()
         self._update_poly_color_btns()
+        self._center_on_polygon()
+
+    def _center_on_polygon(self):
+        """Перенести камеру на центр текущего полигона (среднее всех точек)."""
+        p = self._current_polygon()
+        if p and p.get("points"):
+            pts = p["points"]
+            clat = sum(pt[0] for pt in pts) / len(pts)
+            clon = sum(pt[1] for pt in pts) / len(pts)
+            self.map_view.center_on(clat, clon)
 
     def _update_poly_color_btns(self):
         p = self._current_polygon()
@@ -663,6 +688,16 @@ class MainWindow(QMainWindow):
         self.s_az0.setValue(s["az_start"]); self.s_az1.setValue(s["az_end"])
         self.s_range.setValue(s.get("range_km",10))
         self._update_site_color_btns()
+        # Перенести камеру карты на выбранную точку ЗРК
+        self.map_view.center_on(float(s["lat"]), float(s["lon"]))
+
+    def _on_site_selected_on_map(self, site_id: str):
+        """Клик по маркеру ЗРК на карте — выделяем его в списке справа,
+        что открывает его настройки (через _site_selected)."""
+        for i in range(self.sites_list.count()):
+            if self.sites_list.item(i).data(Qt.UserRole) == site_id:
+                self.sites_list.setCurrentRow(i)
+                break
 
     def _update_site_color_btns(self):
         s = self._current_site()
@@ -697,7 +732,17 @@ class MainWindow(QMainWindow):
         s["az_end"] = self.s_az1.value()
         s["range_km"] = self.s_range.value()
         storage.save_sites(self.sites)
+        # Обновляем список, НЕ теряя выделение и НЕ дёргая камеру:
+        # _refresh_sites() делает clear(), что иначе сбросило бы выбор и
+        # вызвало _site_selected на нулевой строке (прыжок камеры).
+        sid = s["id"]
+        self.sites_list.blockSignals(True)
         self._refresh_sites()
+        for i in range(self.sites_list.count()):
+            if self.sites_list.item(i).data(Qt.UserRole) == sid:
+                self.sites_list.setCurrentRow(i)
+                break
+        self.sites_list.blockSignals(False)
         self.map_view.render_sites(self.sites)
 
     def _del_site(self):

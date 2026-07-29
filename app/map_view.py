@@ -18,18 +18,25 @@ class _Bridge(QObject):
     ready_signal = Signal()
     context_action = Signal(str, float, float)        # action, lat, lon
     site_moved_signal = Signal(str, float, float)     # site_id, lat, lon
+    site_selected_signal = Signal(str)                # site_id
 
     @Slot()
     def ready(self):
         self.ready_signal.emit()
 
-    @Slot(str, float, float)
-    def contextAction(self, action: str, lat: float, lon: float):
-        self.context_action.emit(action, lat, lon)
+    @Slot(str, str, str)
+    def contextAction(self, action: str, lat: str, lon: str):
+        # Координаты приходят строками: QWebChannel искажает второй подряд
+        # float-аргумент (долгота обнулялась/клампилась в 180). Парсим сами.
+        self.context_action.emit(action, float(lat), float(lon))
 
-    @Slot(str, float, float)
-    def siteMoved(self, site_id: str, lat: float, lon: float):
-        self.site_moved_signal.emit(site_id, lat, lon)
+    @Slot(str, str, str)
+    def siteMoved(self, site_id: str, lat: str, lon: str):
+        self.site_moved_signal.emit(site_id, float(lat), float(lon))
+
+    @Slot(str)
+    def siteSelected(self, site_id: str):
+        self.site_selected_signal.emit(site_id)
 
 
 class MapView(QWidget):
@@ -37,6 +44,7 @@ class MapView(QWidget):
     context_action = Signal(str, float, float)
     bounds_received = Signal(dict)
     site_moved = Signal(str, float, float)
+    site_selected = Signal(str)
 
     def __init__(self, tile_base_url: str, parent=None):
         super().__init__(parent)
@@ -65,6 +73,7 @@ class MapView(QWidget):
         self._bridge.ready_signal.connect(self._on_ready)
         self._bridge.context_action.connect(self.context_action)
         self._bridge.site_moved_signal.connect(self.site_moved)
+        self._bridge.site_selected_signal.connect(self.site_selected)
         self._channel.registerObject("bridge", self._bridge)
         self._view.page().setWebChannel(self._channel)
 

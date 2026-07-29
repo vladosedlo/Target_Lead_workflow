@@ -349,9 +349,12 @@ function renderSites(list) {
       const newSec = sectorPolygon(ll.lat, ll.lng, s.az_start, s.az_end, (s.range_km||10)*1000);
       secLayer.setLatLngs(newSec);
     });
+    marker.on('click', () => {
+      if (bridge && bridge.siteSelected) bridge.siteSelected(s.id);
+    });
     marker.on('dragend', (ev) => {
       const ll = ev.target.getLatLng();
-      if (bridge && bridge.siteMoved) bridge.siteMoved(s.id, ll.lat, ll.lng);
+      if (bridge && bridge.siteMoved) bridge.siteMoved(s.id, String(ll.lat), String(ll.lng));
     });
     g.addTo(map);
     siteLayers[s.id] = g;
@@ -387,7 +390,7 @@ function onCtx(e) {
   document.body.appendChild(ctx);
   ctx.querySelectorAll('.item').forEach(el => el.addEventListener('click', () => {
     const act = el.dataset.act;
-    if (bridge) bridge.contextAction(act, lat, lon);
+    if (bridge) bridge.contextAction(act, String(lat), String(lon));
     closeCtx();
   }));
   e.originalEvent.preventDefault();
@@ -399,6 +402,7 @@ window.api = {
   setLayer,
   setPlane: ()=>{}, setShowTrack: ()=>{}, clearTrack: ()=>{},
   renderPolygons: ()=>{}, renderSites: ()=>{},
+  centerOn: ()=>{},
   flyTo: ()=>{}, getBounds: ()=>'{}'
 };
 
@@ -425,7 +429,7 @@ async function boot(){
     inertia: true,
     inertiaDeceleration: 3000,
     easeLinearity: 0.2
-  }).setView([47.259, 11.334], 14);
+  }).setView([53.9006, 27.5590], 12);
 
   window.api.setPlane = setPlane;
   window.api.setShowTrack = setShowTrack;
