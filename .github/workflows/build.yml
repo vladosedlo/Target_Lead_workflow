@@ -40,37 +40,21 @@ jobs:
           pip install pyinstaller
         shell: bash
 
-      - name: Detect entry point
-        id: entry
-        shell: bash
-        run: |
-          if [ -f main.py ]; then
-            echo "entry=main.py" >> $GITHUB_OUTPUT
-            echo "name=app" >> $GITHUB_OUTPUT
-          elif [ -f app.py ]; then
-            echo "entry=app.py" >> $GITHUB_OUTPUT
-            echo "name=app" >> $GITHUB_OUTPUT
-          else
-            ENTRY=$(ls *.py | head -n 1)
-            echo "entry=$ENTRY" >> $GITHUB_OUTPUT
-            echo "name=${ENTRY%.py}" >> $GITHUB_OUTPUT
-          fi
-
       - name: Build with PyInstaller
         shell: bash
         run: |
-          pyinstaller --onefile --noconsole --paths . --hidden-import "app" --hidden-import "main" --name "TargetLead_${{ runner.os }}" "${{ steps.entry.outputs.entry }}"
+          pyinstaller --noconfirm Avionics.spec
 
       - name: Upload artifact (Linux)
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: TargetLead_Linux
-          path: dist/*
+          path: dist/Avionics/*
 
       - name: Upload artifact (Windows)
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: TargetLead_Windows
-          path: dist/*
+          path: dist/Avionics/*
