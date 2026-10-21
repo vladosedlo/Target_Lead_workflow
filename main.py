@@ -19,6 +19,13 @@ def _has_gpu() -> bool:
     return False
 
 
+def _software_gl() -> bool:
+    """True, если текущую сессию нужно гнать на software-рендере (нет GPU)."""
+    if not _sys.platform.startswith("linux"):
+        return False
+    return os.environ.get("QTWEBENGINE_FORCE_SOFTWARE", "") == "1" or not _has_gpu()
+
+
 def _setup_qt_env() -> None:
     if _sys.platform == "darwin":
         os.environ.setdefault("QT_MAC_WANTS_LAYER", "1")
@@ -39,19 +46,24 @@ def _setup_qt_env() -> None:
         # "GLOzone not found" -> Aborted (core dumped).
         # Поэтому: без /dev/dri — только software (SwiftShader), с GPU —
         # штатный path + SwiftShader как fallback для WebGL.
-        if os.environ.get("QTWEBENGINE_FORCE_SOFTWARE", "") == "1" or not _has_gpu():
+        if _software_gl():
+            # Нет GPU. Критично: НЕ форсировать GL в Chromium (--use-gl/angle),
+            # иначе Ozone пытается поднять GL, падает -> "GLOzone not found".
+            # Qt-сторона (scene graph QQuickWidget внутри WebEngine) переводится
+            # на software-рендер => RHI/GL-контекст вообще не создаётся, значит
+            # нет "QRhiGles2: Failed to create context".
+            # Chromium — чистый software через --disable-gpu (без инициализации GL).
             os.environ.setdefault("QT_QUICK_BACKEND", "software")
-            os.environ.setdefault("QT_OPENGL", "software")
             os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
+            os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
             os.environ.setdefault(
                 "QTWEBENGINE_CHROMIUM_FLAGS",
                 " ".join([
                     "--disable-gpu",
-                    "--disable-gpu-rasterization",
                     "--disable-gpu-compositing",
-                    "--use-gl=angle",
-                    "--use-angle=swiftshader",
-                    "--enable-unsafe-swiftshader",
+                    "--disable-gpu-rasterization",
+                    "--in-process-gpu",
+                    "--disable-features=Vulkan",
                     "--enable-features=NetworkService",
                     "--no-sandbox",
                 ])
@@ -61,8 +73,7 @@ def _setup_qt_env() -> None:
                 "QTWEBENGINE_CHROMIUM_FLAGS",
                 " ".join([
                     "--disable-gpu-rasterization",
-                    "--use-angle=swiftshader",
-                    "--enable-unsafe-swiftshader",
+                    "--disable-features=Vulkan",
                     "--enable-features=NetworkService",
                     "--no-sandbox",
                 ])
@@ -86,7 +97,13 @@ from app.main_window import MainWindow
 
 
 def main() -> int:
-    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
+    if _software_gl():
+        # Без GPU шаринг GL-контекстов сам инициализирует GL -> тот же краш.
+        # На software-сессии переводим Qt scene graph в software и НЕ шарим GL.
+        from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
+        QQuickWindow.setGraphicsApi(QSGRendererInterface.Software)
+    else:
+        QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv)
     app.setApplicationName("Авионика")
     app.setOrganizationName("Avionics")
