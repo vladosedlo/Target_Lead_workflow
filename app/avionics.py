@@ -115,7 +115,7 @@ class AvionicsWidget(QWidget):
 
         # Линия горизонта
         pen = QPen(WHITE, 2); p.setPen(pen)
-        p.drawLine(QPointF(-big, 0), QPointF(big, 0))
+        p.drawLine(-big, 0.0, big, 0.0)
 
         # Шкала тангажа
         font = QFont("Arial", max(11, int(r.height()/32))); font.setBold(True)
@@ -126,7 +126,7 @@ class AvionicsWidget(QWidget):
             y = -deg * pitch_px
             length = 70 if deg % 10 == 0 else 36
             p.setPen(QPen(WHITE, 1.7))
-            p.drawLine(QPointF(-length/2, y), QPointF(length/2, y))
+            p.drawLine(-length/2, y, length/2, y)
             if deg % 10 == 0:
                 p.setPen(WHITE)
                 p.drawText(QRectF(-length/2-44, y-12, 34, 24), Qt.AlignVCenter | Qt.AlignRight, str(abs(deg)))
@@ -148,30 +148,30 @@ class AvionicsWidget(QWidget):
             x1, y1 = math.cos(a)*radius, -math.sin(a)*radius
             l = 12 if ang % 30 == 0 or ang == 0 else 7
             x2, y2 = math.cos(a)*(radius+l), -math.sin(a)*(radius+l)
-            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            p.drawLine(x1, y1, x2, y2)
         # Стрелка крена (треугольник снизу шкалы), повёрнута на -roll
         p.save()
         p.rotate(-self._d.roll)
         tri = QPolygonF([QPointF(0, -radius+2), QPointF(-7, -radius+16), QPointF(7, -radius+16)])
-        p.setBrush(WHITE); p.setPen(Qt.NoPen)
+        p.setBrush(WHITE); p.setPen(QPen(Qt.NoPen))
         p.drawPolygon(tri)
         p.restore()
         # Неподвижный треугольник-указатель
         tri2 = QPolygonF([QPointF(0, -radius-2), QPointF(-8, -radius-16), QPointF(8, -radius-16)])
-        p.setBrush(WHITE); p.setPen(Qt.NoPen)
+        p.setBrush(WHITE); p.setPen(QPen(Qt.NoPen))
         p.drawPolygon(tri2)
 
         # Маркер самолёта в центре (как «крылышки»)
         pen = QPen(WHITE, 3); p.setPen(pen)
         p.setBrush(Qt.NoBrush)
-        p.drawLine(QPointF(-60,0), QPointF(-20,0))
-        p.drawLine(QPointF(-20,0), QPointF(-20,10))
-        p.drawLine(QPointF(20,0), QPointF(20,10))
-        p.drawLine(QPointF(20,0), QPointF(60,0))
+        p.drawLine(-60.0, 0.0, -20.0, 0.0)
+        p.drawLine(-20.0, 0.0, -20.0, 10.0)
+        p.drawLine(20.0, 0.0, 20.0, 10.0)
+        p.drawLine(20.0, 0.0, 60.0, 0.0)
         # Маленький центральный «+»
         p.setPen(QPen(MAGENTA, 2))
-        p.drawLine(QPointF(-6,0), QPointF(6,0))
-        p.drawLine(QPointF(0,-6), QPointF(0,6))
+        p.drawLine(-6.0, 0.0, 6.0, 0.0)
+        p.drawLine(0.0, -6.0, 0.0, 6.0)
 
         p.restore()
 
@@ -196,11 +196,11 @@ class AvionicsWidget(QWidget):
             x = cx + delta * px_per_deg
             if x < r.left()-20 or x > r.right()+20: continue
             if deg % 10 == 0:
-                p.drawLine(QPointF(x, r.bottom()-12), QPointF(x, r.bottom()))
+                p.drawLine(x, r.bottom()-12, x, r.bottom())
                 label = {0:"N",90:"E",180:"S",270:"W"}.get(deg, f"{deg:03d}")
                 p.drawText(QRectF(x-24, r.top(), 48, r.height()-12), Qt.AlignHCenter|Qt.AlignVCenter, label)
             else:
-                p.drawLine(QPointF(x, r.bottom()-6), QPointF(x, r.bottom()))
+                p.drawLine(x, r.bottom()-6, x, r.bottom())
         # центральная метка курса
         p.setBrush(BLACK); p.setPen(QPen(WHITE,1))
         rect = QRectF(cx-26, r.top(), 52, r.height())
@@ -224,7 +224,7 @@ class AvionicsWidget(QWidget):
         p.rotate(rel)
         p.setPen(QPen(WHITE, 2)); p.setBrush(WHITE)
         # Стрелка «носом вверх» — при rotate(rel) острие смотрит на азимут rel
-        p.drawLine(QPointF(0,14), QPointF(0,-14))
+        p.drawLine(0.0, 14.0, 0.0, -14.0)
         tri = QPolygonF([QPointF(0,-14), QPointF(-5,-6), QPointF(5,-6)])
         p.drawPolygon(tri)
         p.restore()
@@ -238,7 +238,7 @@ class AvionicsWidget(QWidget):
     def _draw_speed_tape(self, p: QPainter, r: QRectF):
         p.save()
         # Полупрозрачный фон со скруглением
-        p.setPen(Qt.NoPen); p.setBrush(QColor(0,0,0,110))
+        p.setPen(QPen(Qt.NoPen)); p.setBrush(QColor(0,0,0,110))
         p.drawRoundedRect(r, 6, 6)
         p.setClipRect(r)
         v = self._d.airspeed
@@ -250,10 +250,10 @@ class AvionicsWidget(QWidget):
             if s < 0: continue
             y = cy - (s - v) * px_per
             if s % 5 == 0:
-                p.drawLine(QPointF(r.right()-14, y), QPointF(r.right()-2, y))
+                p.drawLine(r.right()-14, y, r.right()-2, y)
                 p.drawText(QRectF(r.right()-56, y-11, 40, 22), Qt.AlignRight|Qt.AlignVCenter, str(s))
             else:
-                p.drawLine(QPointF(r.right()-8, y), QPointF(r.right()-2, y))
+                p.drawLine(r.right()-8, y, r.right()-2, y)
         p.restore()
         # Текущая метка (выходит чуть за ленту вправо — «флажок»)
         p.save()
@@ -278,7 +278,7 @@ class AvionicsWidget(QWidget):
     # ----- лента высоты -----
     def _draw_alt_tape(self, p: QPainter, r: QRectF):
         p.save()
-        p.setPen(Qt.NoPen); p.setBrush(QColor(0,0,0,110))
+        p.setPen(QPen(Qt.NoPen)); p.setBrush(QColor(0,0,0,110))
         p.drawRoundedRect(r, 6, 6)
         p.setClipRect(r)
         v = self._d.altitude
@@ -289,10 +289,10 @@ class AvionicsWidget(QWidget):
         for s in range(start, end+1):
             y = cy - (s - v) * px_per
             if s % 5 == 0:
-                p.drawLine(QPointF(r.left()+2, y), QPointF(r.left()+14, y))
+                p.drawLine(r.left()+2, y, r.left()+14, y)
                 p.drawText(QRectF(r.left()+16, y-11, 44, 22), Qt.AlignLeft|Qt.AlignVCenter, str(s))
             else:
-                p.drawLine(QPointF(r.left()+2, y), QPointF(r.left()+8, y))
+                p.drawLine(r.left()+2, y, r.left()+8, y)
         p.restore()
         # Флажок текущего значения (стрелка влево)
         p.save()
@@ -312,7 +312,7 @@ class AvionicsWidget(QWidget):
 
     def _draw_vsi(self, p: QPainter, r: QRectF):
         p.save()
-        p.setPen(Qt.NoPen); p.setBrush(QColor(0,0,0,90))
+        p.setPen(QPen(Qt.NoPen)); p.setBrush(QColor(0,0,0,90))
         p.drawRoundedRect(r, 8, 8)
 
         p.setClipRect(r)
@@ -344,7 +344,7 @@ class AvionicsWidget(QWidget):
             y1 = cy - math.sin(a)*radius
             x2 = cx + math.cos(a)*(radius - tl)
             y2 = cy - math.sin(a)*(radius - tl)
-            p.drawLine(QPointF(x1,y1), QPointF(x2,y2))
+            p.drawLine(x1, y1, x2, y2)
             if v in (-10,-5,5,10) or v == 0:
                 xt = cx + math.cos(a)*(radius - label_off)
                 yt = cy - math.sin(a)*(radius - label_off)
@@ -360,8 +360,8 @@ class AvionicsWidget(QWidget):
         x_tip = cx + math.cos(a)*(radius - radius*0.04)
         y_tip = cy - math.sin(a)*(radius - radius*0.04)
         p.setPen(QPen(WHITE, max(2, radius*0.03)))
-        p.drawLine(QPointF(cx + math.cos(a)*radius*0.08, cy - math.sin(a)*radius*0.08),
-                   QPointF(x_tip, y_tip))
+        p.drawLine(cx + math.cos(a)*radius*0.08, cy - math.sin(a)*radius*0.08,
+                   x_tip, y_tip)
         # Цифра вертикальной скорости сверху ленты
         p.setPen(WHITE); f = QFont("Arial", max(9, font_px+2)); f.setBold(True); p.setFont(f)
         p.drawText(QRectF(r.left()+4, r.top()+2, r.width()-8, 20),
@@ -384,20 +384,20 @@ class AvionicsWidget(QWidget):
 
         # Вертикальная (roll)
         p.setPen(outline)
-        p.drawLine(QPointF(dx, -70), QPointF(dx, 70))
+        p.drawLine(dx, -70.0, dx, 70.0)
         p.setPen(fill)
-        p.drawLine(QPointF(dx, -70), QPointF(dx, 70))
+        p.drawLine(dx, -70.0, dx, 70.0)
 
         # Горизонтальная (pitch)
         p.setPen(outline)
-        p.drawLine(QPointF(-90, dy), QPointF(90, dy))
+        p.drawLine(-90.0, dy, 90.0, dy)
         p.setPen(fill)
-        p.drawLine(QPointF(-90, dy), QPointF(90, dy))
+        p.drawLine(-90.0, dy, 90.0, dy)
 
         # Центральный неподвижный «+»
         p.setPen(QPen(WHITE, 1.5))
-        p.drawLine(QPointF(-4, 0), QPointF(4, 0))
-        p.drawLine(QPointF(0, -4), QPointF(0, 4))
+        p.drawLine(-4.0, 0.0, 4.0, 0.0)
+        p.drawLine(0.0, -4.0, 0.0, 4.0)
         p.restore()
 
     # ----- нижняя строка (RPM и T — у центра) -----
