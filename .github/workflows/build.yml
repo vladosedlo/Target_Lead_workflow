@@ -54,6 +54,12 @@ jobs:
         run: |
           pyinstaller --noconfirm Avionics.spec
 
+      - name: Report Qt/PySide versions
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          python -c "import PySide6, PySide6.QtCore as c; print('PySide6', PySide6.__version__, '| Qt', c.qVersion())"
+
       - name: Smoke test (Linux, software GL under Xvfb)
         if: runner.os == 'Linux'
         shell: bash
