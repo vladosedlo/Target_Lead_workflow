@@ -1,8 +1,4 @@
-"""Клиент опроса XML-данных от mandala с частотой 10 Гц.
 
-Детектирует «замороженные» данные: если значения roll/pitch/yaw/altitude/airspeed
-не меняются дольше N секунд — считается, что связи нет, даже если HTTP отвечает.
-"""
 from __future__ import annotations
 
 import re

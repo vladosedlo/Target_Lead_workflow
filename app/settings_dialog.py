@@ -48,8 +48,6 @@ class SettingsDialog(QDialog):
         self.pwd_edit.setEchoMode(QLineEdit.Password)
         form.addRow("Пароль настроек:", self.pwd_edit)
 
-        # RU-провайдеры: Google спутник/гибрид + Yandex карты — больше
-        # подписей и лучшее качество спутника в СНГ.
         self.ru_cb = QCheckBox("RU-провайдеры")
         self.ru_cb.setChecked(self._settings.get("provider_set", "world") == "ru")
         form.addRow("Карты:", self.ru_cb)

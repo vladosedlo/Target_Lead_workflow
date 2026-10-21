@@ -13,7 +13,6 @@ from PySide6.QtWidgets import QWidget
 from .mandala_client import FlightData
 
 
-# Цвета как на референсе
 SKY_TOP = QColor(32, 76, 247)
 SKY_BOT = QColor(48, 129, 247)
 GND_TOP = QColor(238, 88, 1)	
@@ -31,10 +30,9 @@ class AvionicsWidget(QWidget):
         super().__init__(parent)
         self.setMinimumSize(420, 350)
         self._data = FlightData()
-        # Сглаженные значения для плавных анимаций
         self._d = FlightData()
         self._anim = QTimer(self)
-        self._anim.setInterval(16)  # ~60 Гц анимация
+        self._anim.setInterval(16)  
         self._anim.timeout.connect(self._tick)
         self._anim.start()
 
@@ -48,7 +46,6 @@ class AvionicsWidget(QWidget):
     def _tick(self):
         a = 0.25  # коэффициент сглаживания
         s, t = self._d, self._data
-        # Для угловых величин (yaw/course/windHdg) — кратчайший путь
         s.roll      += (t.roll - s.roll) * a
         s.pitch     += (t.pitch - s.pitch) * a
         s.yaw       = _lerp_angle(s.yaw, t.yaw, a)
@@ -73,26 +70,23 @@ class AvionicsWidget(QWidget):
         p.setRenderHint(QPainter.TextAntialiasing, True)
 
         w, h = self.width(), self.height()
-        # Фон — чёрный, на нём горизонт, ленты идут ПОВЕРХ горизонта
         p.fillRect(self.rect(), QColor(8, 12, 16))
 
-        # Авиагоризонт занимает почти всю площадь
         ai_rect = QRectF(0, 0, w, h)
         self._draw_attitude(p, ai_rect)
 
-        # Полупрозрачные ленты поверх горизонта
         tape_w = max(72, int(w * 0.12))
         vsi_w  = max(64, int(w * 0.10))
-        top_off = 30  # под компасную полосу (стала выше)
+        top_off = 30  # под компасную полосу (
         bot_off = 70  # под нижнюю строку
         self._draw_speed_tape(p, QRectF(2, top_off, tape_w, h - top_off - bot_off))
         self._draw_alt_tape  (p, QRectF(w - tape_w - vsi_w - 4, top_off, tape_w, h - top_off - bot_off))
         self._draw_vsi       (p, QRectF(w - vsi_w - 2, top_off, vsi_w, h - top_off - bot_off))
 
-        # Командные планки (cmd_roll/cmd_pitch) в центре
+        # Командные планки
         self._draw_cmd_bars(p, ai_rect)
 
-        # Нижняя строка: RPM и T (ближе к центру)
+        
         self._draw_bottom_bar(p)
         p.end()
 
@@ -110,7 +104,7 @@ class AvionicsWidget(QWidget):
         p.rotate(-roll)
         p.translate(0, pitch * pitch_px)
 
-        # Небо / земля (большие прямоугольники, чтобы при повороте не было пустот)
+        # Небо / земля 
         big = max(r.width(), r.height()) * 2
         sky_grad = QLinearGradient(0, -big, 0, 0)
         sky_grad.setColorAt(0, SKY_TOP); sky_grad.setColorAt(1, SKY_BOT)
@@ -316,17 +310,12 @@ class AvionicsWidget(QWidget):
         p.drawText(box.adjusted(16,0,-2,0), Qt.AlignCenter, f"{v:.0f}")
         p.restore()
 
-    # ----- ИЗОГНУТЫЙ вариометр (дуга справа, стрелка влево к самолёту) -----
     def _draw_vsi(self, p: QPainter, r: QRectF):
         p.save()
         p.setPen(Qt.NoPen); p.setBrush(QColor(0,0,0,90))
         p.drawRoundedRect(r, 8, 8)
-        # ВАЖНО: ограничиваем всю отрисовку дуги/стрелки/меток прямоугольником,
-        # чтобы при любых размерах ничего не вылезало за границы виджета.
-        p.setClipRect(r)
 
-        # Геометрия дуги — целиком от размеров r, без абсолютных пикселей.
-        # Центр дуги ставим у правого края r, чтобы вся дуга помещалась ВНУТРИ r.
+        p.setClipRect(r)
         cx = r.right() - 2
         cy = r.center().y()
         # Ограничения на радиус:
@@ -337,7 +326,6 @@ class AvionicsWidget(QWidget):
         radius_by_w = (cx - r.left()) - 4
         radius = max(10.0, min(radius_by_h, radius_by_w))
 
-        # Все офсеты — в долях радиуса (масштабируются вместе с виджетом)
         tick_major = radius * 0.10
         tick_minor = radius * 0.05
         label_off  = radius * 0.22
@@ -387,10 +375,8 @@ class AvionicsWidget(QWidget):
         dx = max(-90, min(90, self._d.cmd_roll * 6.0))
         dy = -max(-90, min(90, self._d.cmd_pitch * 6.0))
 
-        # Более тусклый пурпурный
         dim_magenta = QColor(170, 70, 150)
 
-        # Контур (чёрная тонкая линия) — рисуем чуть толще, поверх — заливка
         outline = QPen(QColor(0, 0, 0, 220), 8)
         outline.setCapStyle(Qt.FlatCap)
         fill = QPen(dim_magenta, 6)

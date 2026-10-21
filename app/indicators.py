@@ -7,7 +7,6 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel
 
 
 class StatusLamp(QWidget):
-    """Круглая «лампа» с подписью."""
 
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
@@ -57,11 +56,9 @@ class StatusLamp(QWidget):
         grad.setColorAt(1, col.darker(180))
         p.setBrush(grad); p.setPen(QPen(QColor(0,0,0,160), 2))
         p.drawEllipse(int(cx-d/2), int(cy-d/2), d, d)
-        # подпись — крупная, по центру оставшейся области
         text_x0 = int(22 + d + 14)
         text_w  = w - text_x0 - 14
         text_rect = (text_x0, 0, text_w, h)
-        # Подбираем максимальный размер шрифта, чтобы поместилось
         f = QFont("Arial"); f.setBold(True)
         size = max(10, int(h * 0.42))
         for sz in range(size, 9, -1):

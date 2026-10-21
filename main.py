@@ -1,58 +1,83 @@
 #!/usr/bin/env python3
-"""Точка входа приложения авионики."""
 from __future__ import annotations
 
 import sys
 import os
 
-# === Платформенная настройка QtWebEngine ===
-#
-# На macOS QWebEngineView внутри QDockWidget падает при drag/dock операциях
-# ("Compositor returned null texture"), потому что Qt пересоздаёт NSView и
-# Chromium-композитор теряет GL-поверхность. Решение — layer-backed NSView
-# (QT_MAC_WANTS_LAYER=1) + native window-атрибуты на виджете (см. map_view.py)
-# и более консервативные флаги Chromium.
-#
-# На Linux (включая Intel GPU) и Windows таких проблем нет — там GPU-стек
-# Chromium стабилен из коробки, костыли не нужны и даже вредны.
+
 import sys as _sys
 
-if _sys.platform == "darwin":
-    os.environ.setdefault("QT_MAC_WANTS_LAYER", "1")
-    os.environ.setdefault(
-        "QTWEBENGINE_CHROMIUM_FLAGS",
-        " ".join([
-            # GPU включён, но без аппаратной растеризации — она нестабильна
-            # на macOS при перепарентинге окон.
-            "--disable-gpu-rasterization",
-            "--disable-features=UseChromeOSDirectVideoDecoder,Vulkan",
-            "--enable-features=NetworkService",
-            "--no-sandbox",
-        ])
-    )
-elif _sys.platform.startswith("linux"):
-    # Linux + Intel iGPU: стандартный путь — OpenGL/EGL через Mesa.
-    # Включаем GPU-растеризацию и zero-copy для максимальной плавности карты.
-    # ignore-gpu-blocklist нужен для некоторых старых Intel-чипов (Chromium
-    # иначе заносит их в чёрный список и откатывается на software).
-    os.environ.setdefault(
-        "QTWEBENGINE_CHROMIUM_FLAGS",
-        " ".join([
-            "--enable-gpu-rasterization",
-            "--enable-zero-copy",
-            "--ignore-gpu-blocklist",
-            "--enable-features=NetworkService",
-            "--no-sandbox",
-        ])
-    )
-else:  # Windows и прочее
-    os.environ.setdefault(
-        "QTWEBENGINE_CHROMIUM_FLAGS",
-        " ".join([
-            "--enable-gpu-rasterization",
-            "--enable-features=NetworkService",
-        ])
-    )
+
+def _has_gpu() -> bool:
+    """Есть ли реальный GPU (узел DRI) — иначе форсируем software-рендер."""
+    import glob as _glob
+    try:
+        if _glob.glob("/dev/dri/card*") or _glob.glob("/dev/dri/renderD*"):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _setup_qt_env() -> None:
+    if _sys.platform == "darwin":
+        os.environ.setdefault("QT_MAC_WANTS_LAYER", "1")
+        os.environ.setdefault(
+            "QTWEBENGINE_CHROMIUM_FLAGS",
+            " ".join([
+                "--disable-gpu-rasterization",
+                "--disable-features=UseChromeOSDirectVideoDecoder,Vulkan",
+                "--enable-features=NetworkService",
+                "--no-sandbox",
+            ])
+        )
+    elif _sys.platform.startswith("linux"):
+        # Машин без рабочего GL много (ВМ, старый Mesa, Wayland без EGL):
+        # форсированный GPU-path (enable-gpu-rasterization / zero-copy /
+        # ignore-gpu-blocklist) там даёт "QRhiGles2: Failed to create context",
+        # после чего внутренний QQuickWidget WebEngine падает с
+        # "GLOzone not found" -> Aborted (core dumped).
+        # Поэтому: без /dev/dri — только software (SwiftShader), с GPU —
+        # штатный path + SwiftShader как fallback для WebGL.
+        if os.environ.get("QTWEBENGINE_FORCE_SOFTWARE", "") == "1" or not _has_gpu():
+            os.environ.setdefault("QT_QUICK_BACKEND", "software")
+            os.environ.setdefault("QT_OPENGL", "software")
+            os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
+            os.environ.setdefault(
+                "QTWEBENGINE_CHROMIUM_FLAGS",
+                " ".join([
+                    "--disable-gpu",
+                    "--disable-gpu-rasterization",
+                    "--disable-gpu-compositing",
+                    "--use-gl=angle",
+                    "--use-angle=swiftshader",
+                    "--enable-unsafe-swiftshader",
+                    "--enable-features=NetworkService",
+                    "--no-sandbox",
+                ])
+            )
+        else:
+            os.environ.setdefault(
+                "QTWEBENGINE_CHROMIUM_FLAGS",
+                " ".join([
+                    "--disable-gpu-rasterization",
+                    "--use-angle=swiftshader",
+                    "--enable-unsafe-swiftshader",
+                    "--enable-features=NetworkService",
+                    "--no-sandbox",
+                ])
+            )
+    else:  # Windows и прочее
+        os.environ.setdefault(
+            "QTWEBENGINE_CHROMIUM_FLAGS",
+            " ".join([
+                "--disable-gpu-rasterization",
+                "--enable-features=NetworkService",
+            ])
+        )
+
+
+_setup_qt_env()
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
@@ -62,12 +87,10 @@ from app.main_window import MainWindow
 
 def main() -> int:
     QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
-    # AA_UseSoftwareOpenGL НЕ ставим — иначе всё уйдёт в CPU и карта будет тормозить.
     app = QApplication(sys.argv)
     app.setApplicationName("Авионика")
     app.setOrganizationName("Avionics")
 
-    # Тёмная палитра по умолчанию через QSS
     app.setStyleSheet(_load_qss())
 
     w = MainWindow()
@@ -157,7 +180,6 @@ def _load_qss() -> str:
     QListWidget::item:selected { background: #2a6cff; color: #fff; }
     QListWidget::item:hover { background: #1b2735; }
 
-    /* === GroupBox: визуально отделённые подсекции === */
     QGroupBox {
         background: #0f141a;
         border: 1px solid #2c3a4a; border-radius: 8px;

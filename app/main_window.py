@@ -27,13 +27,6 @@ from .geo import in_sector
 
 
 class SteadyDoubleSpinBox(QDoubleSpinBox):
-    """QDoubleSpinBox без «залипающих» стрелок.
-
-    Баг Qt: при пропущенном mouseRelease (перерисовка, потеря фокуса,
-    прокрутка внутри QScrollArea) кэш stepEnabled застревает и одна из
-    кнопок (вверх/вниз) перестаёт работать. Всегда разрешаем оба
-    направления — Qt сам клампит значение по setRange().
-    """
     def stepEnabled(self):
         return (QAbstractSpinBox.StepUpEnabled |
                 QAbstractSpinBox.StepDownEnabled)
@@ -53,35 +46,23 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Мишень. АРМ Руководителя стрельб")
         self.resize(1500, 950)
 
-        # --- состояние ---
         self.settings = storage.load_settings()
-        self.polygons = storage.load_polygons()  # [{id,name,points:[[lat,lon],...]}]
-        self.sites = storage.load_sites()        # [{id,type,label,lat,lon,az_start,az_end,range_km}]
+        self.polygons = storage.load_polygons()
+        self.sites = storage.load_sites()
         self._current_polygon_id: Optional[str] = None
         self._last_data: FlightData = FlightData()
 
-        # --- набор провайдеров (world/ru) ---
         set_provider_set(self.settings.get("provider_set", "world"))
 
-        # --- сервер тайлов ---
         self._tiles = TileServer()
         self._tiles.start()
-        # Гарантируем наличие Leaflet локально + базовых тайлов мира.
-        # Если кэша нет — выполняем синхронно с прогрессом (нужен интернет ОДИН раз).
         self._ensure_offline_assets()
 
-        # Поддержка вложенных доков (нужно для гибкой компоновки)
         self.setDockNestingEnabled(True)
 
-        # Центральный widget — пустой плейсхолдер, чтобы карта (док снизу)
-        # могла занять всё пространство при скрытии других панелей.
         _ph = QWidget(); _ph.setMaximumSize(0, 0)
         self.setCentralWidget(_ph)
 
-        # Создаём все 4 дока — компоновка задаётся в _apply_default_layout()
-        # По умолчанию доки ЗАБЛОКИРОВАНЫ (нельзя двигать/откреплять/закрывать).
-        # Разблокировка — через кнопку «Разрешить перенос окон» в меню Вид.
-        # Это заодно защищает от падения QtWebEngine на macOS при drag.
         self._docks_unlocked = bool(self.settings.get("docks_unlocked", False))
         F = self._dock_features(self._docks_unlocked)
 
@@ -113,10 +94,8 @@ class MainWindow(QMainWindow):
         self.dock_side.setObjectName("dock_side")
         self.dock_side.setWidget(self.side_panel)
 
-        # Применяем флаги ко всем докам разом
         self._apply_dock_features()
 
-        # --- раскладка по сетке 2×2: применяем дефолт, затем восстанавливаем сохранённую ---
         self._apply_default_layout()
         saved = self.settings.get("dock_state")
         if saved:
@@ -126,44 +105,35 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        # --- меню и тулбар ---
         self._build_menu()
         self._build_toolbar()
 
-        # --- статус-бар ---
         self.statusBar().showMessage("Готово")
 
-        # --- клиент mandala ---
         self.client = MandalaClient(self.settings.get("mandala_url"))
         self.client.data_ready.connect(self._on_data)
         self.client.link_status.connect(self._on_link)
         self.client.start()
 
-        # --- периодическая проверка зоны пуска ---
         self._zone_timer = QTimer(self); self._zone_timer.setInterval(200)
         self._zone_timer.timeout.connect(self._update_zone)
         self._zone_timer.start()
 
     # =========================================================
     def _dock_features(self, unlocked: bool):
-        """Возвращает набор флагов QDockWidget в зависимости от режима блокировки."""
         if unlocked:
             return (QDockWidget.DockWidgetMovable
                     | QDockWidget.DockWidgetFloatable
                     | QDockWidget.DockWidgetClosable)
-        # Заблокировано: нельзя двигать, откреплять, закрывать. Заголовок скрыт.
         return QDockWidget.NoDockWidgetFeatures
 
     def _apply_dock_features(self):
         F = self._dock_features(self._docks_unlocked)
         for d in (self.dock_av, self.dock_ind, self.dock_map, self.dock_side):
             d.setFeatures(F)
-            # В заблокированном режиме скрываем заголовок, чтобы не было
-            # визуального «хвата» для перетаскивания и вид был чище.
             if self._docks_unlocked:
                 d.setTitleBarWidget(None)
             else:
-                # Пустой виджет вместо тайтла — заголовок исчезает
                 empty = QWidget(); empty.setFixedHeight(0)
                 d.setTitleBarWidget(empty)
 
@@ -184,23 +154,16 @@ class MainWindow(QMainWindow):
             d.setFloating(False)
             d.show()
 
-
-        # Шаг 1: левая колонка — авионика
         self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_av)
-        # Шаг 2: правая колонка — индикаторы (горизонтальный сплит на две колонки)
         self.splitDockWidget(self.dock_av, self.dock_ind, Qt.Horizontal)
-        # Шаг 3: в левой колонке под авионикой — карта
         self.splitDockWidget(self.dock_av, self.dock_map, Qt.Vertical)
-        # Шаг 4: в правой колонке под индикаторами — объекты
         self.splitDockWidget(self.dock_ind, self.dock_side, Qt.Vertical)
 
-        # Пропорции
         self.resizeDocks([self.dock_av, self.dock_ind], [3, 1], Qt.Horizontal)
         self.resizeDocks([self.dock_av, self.dock_map], [1, 3], Qt.Vertical)
         self.resizeDocks([self.dock_ind, self.dock_side], [1, 3], Qt.Vertical)
 
     def _reset_layout(self):
-        """Кнопка «Стандартный вид» — применить дефолтную раскладку и сохранить."""
         self._apply_default_layout()
         self._save_layout()
 
@@ -214,15 +177,13 @@ class MainWindow(QMainWindow):
             pass
 
     def _ensure_offline_assets(self):
-        """Проверяет наличие Leaflet и базовых тайлов мира; при отсутствии — качает."""
+        """Проверяет Leaflet и базовые тайлы; качает при первом запуске."""
         from .tile_server import STATIC_DIR, tile_exists
         leaflet_ok = (STATIC_DIR / "leaflet.js").exists() and (STATIC_DIR / "leaflet.css").exists()
-        # Проверяем хотя бы один тайл z=0 для основного провайдера
         prov = self.settings.get("map_layer", "sat")
         base_prov = "sat" if prov == "sat_labels" else prov
         world_ok = tile_exists(base_prov, 0, 0, 0)
         if leaflet_ok and world_ok:
-            # Запускаем фоновую дозагрузку остальных уровней
             preload_world(prov, z_max=3)
             return
 
@@ -231,12 +192,10 @@ class MainWindow(QMainWindow):
         dlg.setWindowTitle("Первый запуск")
         dlg.setMinimumDuration(0); dlg.setValue(0)
         QApplication.processEvents()
-        # 1) Leaflet
         if not leaflet_ok:
             dlg.setLabelText("Загрузка Leaflet…")
             QApplication.processEvents()
             ensure_leaflet()
-        # 2) Базовые тайлы мира (z 0..3) — синхронно
         dlg.setLabelText("Загрузка базовых тайлов мира (z 0–3)…")
         QApplication.processEvents()
         def progress(i, total):
@@ -311,7 +270,7 @@ class MainWindow(QMainWindow):
         tb.setFloatable(False)
         tb.setIconSize(QSize(18, 18))
         tb.setObjectName("mapToolbar")
-        # Единый монолитный стиль для всего тулбара и его виджетов
+        # Стили тулбара
         tb.setStyleSheet("""
             QToolBar#mapToolbar {
                 background: #161d25;
@@ -389,15 +348,12 @@ class MainWindow(QMainWindow):
         self.cb_follow.toggled.connect(self._toggle_follow)
         tb.addWidget(self.cb_follow)
 
-        # Растяжка справа, чтобы элементы не «прилипали»
         spacer = QWidget(); spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         tb.addWidget(spacer)
 
     def _build_side_panel(self) -> QWidget:
-        # Внутренний виджет с содержимым
         inner = QWidget()
         lay = QVBoxLayout(inner); lay.setContentsMargins(8,8,8,8); lay.setSpacing(8)
-        w = inner  # для совместимости имени ниже
 
         # --- Полигоны ---
         gp = QGroupBox("Полигоны")
@@ -473,9 +429,8 @@ class MainWindow(QMainWindow):
         lay.addWidget(gs)
 
         lay.addStretch(1)
-        # начальное наполнение
         self._refresh_polys(); self._refresh_sites()
-        # Оборачиваем в QScrollArea, чтобы при узком окне ничего не съедалось
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -489,7 +444,6 @@ class MainWindow(QMainWindow):
         self.map_view.set_show_track(self.settings.get("show_track", True))
         self.map_view.render_polygons(self.polygons)
         self.map_view.render_sites(self.sites)
-        # Восстановим состояние «следить за самолётом»
         if self.settings.get("follow_plane", False):
             self.map_view.set_follow(True)
 
@@ -513,8 +467,6 @@ class MainWindow(QMainWindow):
         self._last_data = fd
         self.avionics.set_data(fd)
         if fd.gps_lat or fd.gps_lon:
-            # Только обновляем целевые координаты — реальное движение маркера
-            # и плавное следование карты делаются на стороне JS (через RAF).
             self.map_view.set_plane(fd.gps_lat, fd.gps_lon, fd.course)
 
     def _on_link(self, ok: bool, reason: str):
@@ -584,7 +536,6 @@ class MainWindow(QMainWindow):
         self._center_on_polygon()
 
     def _center_on_polygon(self):
-        """Перенести камеру на центр текущего полигона (среднее всех точек)."""
         p = self._current_polygon()
         if p and p.get("points"):
             pts = p["points"]
@@ -600,7 +551,6 @@ class MainWindow(QMainWindow):
         self._style_color_btn(self.poly_fill_btn, fc)
 
     def _style_color_btn(self, btn: QPushButton, hex_color: str):
-        # Контрастный текст на фоне выбранного цвета
         try:
             qc = QColor(hex_color)
             yiq = (qc.red()*299 + qc.green()*587 + qc.blue()*114) / 1000
@@ -619,7 +569,6 @@ class MainWindow(QMainWindow):
         col = QColorDialog.getColor(QColor(cur), self, "Выберите цвет")
         if not col.isValid(): return
         p[field] = col.name()
-        # Если меняем контур и заливки ещё нет — заливка наследуется
         if field == "color" and not p.get("fill_color"):
             p["fill_color"] = col.name()
         storage.save_polygons(self.polygons)
@@ -633,7 +582,6 @@ class MainWindow(QMainWindow):
         self.polygons.append(p)
         storage.save_polygons(self.polygons)
         self._refresh_polys()
-        # выбрать новый
         for i in range(self.poly_list.count()):
             if self.poly_list.item(i).data(Qt.UserRole) == p["id"]:
                 self.poly_list.setCurrentRow(i); break
@@ -688,12 +636,9 @@ class MainWindow(QMainWindow):
         self.s_az0.setValue(s["az_start"]); self.s_az1.setValue(s["az_end"])
         self.s_range.setValue(s.get("range_km",10))
         self._update_site_color_btns()
-        # Перенести камеру карты на выбранную точку ЗРК
         self.map_view.center_on(float(s["lat"]), float(s["lon"]))
 
     def _on_site_selected_on_map(self, site_id: str):
-        """Клик по маркеру ЗРК на карте — выделяем его в списке справа,
-        что открывает его настройки (через _site_selected)."""
         for i in range(self.sites_list.count()):
             if self.sites_list.item(i).data(Qt.UserRole) == site_id:
                 self.sites_list.setCurrentRow(i)
@@ -732,9 +677,6 @@ class MainWindow(QMainWindow):
         s["az_end"] = self.s_az1.value()
         s["range_km"] = self.s_range.value()
         storage.save_sites(self.sites)
-        # Обновляем список, НЕ теряя выделение и НЕ дёргая камеру:
-        # _refresh_sites() делает clear(), что иначе сбросило бы выбор и
-        # вызвало _site_selected на нулевой строке (прыжок камеры).
         sid = s["id"]
         self.sites_list.blockSignals(True)
         self._refresh_sites()
@@ -766,8 +708,6 @@ class MainWindow(QMainWindow):
     def _toggle_follow(self, v: bool):
         self.settings["follow_plane"] = bool(v)
         storage.save_settings(self.settings)
-        # Передаём флаг в JS — там карта будет плавно следовать за
-        # сглаженной (RAF-интерполированной) позицией маркера. Зум не меняется.
         self.map_view.set_follow(bool(v))
 
     # ---------- редактирование точек полигона ----------
@@ -812,7 +752,6 @@ class MainWindow(QMainWindow):
                 s["lat"] = lat; s["lon"] = lon
                 storage.save_sites(self.sites)
                 self._refresh_sites()
-                # Если эта точка выбрана — обновить поля координат
                 cur = self._current_site()
                 if cur and cur["id"] == site_id:
                     self.s_lat.setValue(lat); self.s_lon.setValue(lon)

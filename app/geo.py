@@ -1,4 +1,3 @@
-"""Гео-геометрия: расстояния, проверка точки в полигоне и в секторе ЗРК."""
 from __future__ import annotations
 
 import math

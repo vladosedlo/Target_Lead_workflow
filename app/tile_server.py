@@ -1,14 +1,4 @@
-"""Локальный HTTP-сервер тайлов с дисковым кэшем.
 
-Провайдеры:
-  - sat         : Esri World Imagery (спутник, без подписей)
-  - sat_labels  : спутник + подписи (Esri Imagery + Reference Overlay)
-  - topo        : Esri World Topo Map
-  - osm         : OpenStreetMap
-  - ref         : служебный overlay-слой подписей (используется для sat_labels)
-
-Отдаёт по URL: /tiles/<provider>/<z>/<x>/<y>.png
-"""
 from __future__ import annotations
 
 import math
@@ -35,7 +25,6 @@ LEAFLET_FILES = {
 
 
 def ensure_leaflet(timeout: float = 6.0) -> bool:
-    """Гарантирует наличие Leaflet в STATIC_DIR. Возвращает True если всё на месте."""
     ok = True
     for name, url in LEAFLET_FILES.items():
         p = STATIC_DIR / name
@@ -52,11 +41,6 @@ def ensure_leaflet(timeout: float = 6.0) -> bool:
     return ok
 
 
-# === Наборы провайдеров ===
-# "world" — стандартные мировые провайдеры (Esri/OSM).
-# "ru"    — провайдеры с лучшей детализацией и подписями в СНГ:
-#           Google спутник/гибрид (высокое качество в РФ/СНГ),
-#           Yandex карты (детальные подписи), Yandex sat.
 PROVIDERS_WORLD = {
     "sat":        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     "sat_labels": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -66,18 +50,13 @@ PROVIDERS_WORLD = {
 }
 
 PROVIDERS_RU = {
-    # Google Satellite — отличное качество в СНГ, без подписей (lyrs=s)
     "sat":        "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
-    # Спутник + подписи: база Google sat, поверх — overlay labels (lyrs=h)
     "sat_labels": "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
     "ref":        "https://mt1.google.com/vt/lyrs=h&x={x}&y={y}&z={z}",
-    # Топография и OSM — те же, что в мировом наборе (Web Mercator,
-    # совместимы с Leaflet; Yandex тайлы в EPSG:3395 несовместимы).
     "topo":       "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
     "osm":        "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
 }
 
-# Текущий активный набор — переключается через set_provider_set()
 _CURRENT_SET = "world"
 PROVIDERS = dict(PROVIDERS_WORLD)
 
@@ -87,16 +66,12 @@ def current_provider_set() -> str:
 
 
 def set_provider_set(name: str) -> None:
-    """Переключение набора провайдеров: 'world' | 'ru'.
-    Кэш разделён по набору (TILES_DIR/<set>/<provider>/...), поэтому тайлы
-    Google не перепутаются с Esri под одним ключом 'sat'."""
     global PROVIDERS, _CURRENT_SET
     _CURRENT_SET = "ru" if name == "ru" else "world"
     src = PROVIDERS_RU if _CURRENT_SET == "ru" else PROVIDERS_WORLD
     PROVIDERS.clear(); PROVIDERS.update(src)
 
 
-# Отдельный реферер для Google/Yandex — иначе серверы могут возвращать 403
 _REFERERS = {
     "google": "https://www.google.com/maps",
     "yandex": "https://yandex.ru/maps/",
@@ -121,7 +96,6 @@ _INFLIGHT_LOCK = threading.Lock()
 
 
 def _tile_path(provider: str, z: int, x: int, y: int) -> Path:
-    # Разделяем кэш по набору провайдеров, чтобы Google/Esri не смешивались
     return TILES_DIR / _CURRENT_SET / provider / str(z) / str(x) / f"{y}.png"
 
 
@@ -135,7 +109,6 @@ def _download(provider: str, z: int, x: int, y: int) -> Optional[bytes]:
     if not url_tmpl:
         return None
     key = (provider, z, x, y)
-    # Дедупликация одновременных запросов одного и того же тайла
     with _INFLIGHT_LOCK:
         ev = _INFLIGHT.get(key)
         if ev is not None:
@@ -187,7 +160,6 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             super().handle_one_request()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            # Клиент отменил запрос тайла (норма при быстром панорамировании)
             self.close_connection = True
 
     def _safe_write(self, data: bytes) -> None:
@@ -311,8 +283,7 @@ def download_area(provider: str, lat1: float, lon1: float, lat2: float, lon2: fl
 
 def preload_world(provider: str = "sat", z_max: int = 3,
                   progress=None, sync: bool = False) -> int:
-    """Предзагрузка мира до z_max. По умолчанию ~85 тайлов на провайдер.
-    sync=True — блокирует и возвращает число скачанных; иначе фоном."""
+
     def _plan():
         plan = []
         for prov in _expand_providers(provider):

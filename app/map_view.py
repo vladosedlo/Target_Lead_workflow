@@ -1,4 +1,3 @@
-"""Виджет карты на QtWebEngine + Leaflet, с мостом QWebChannel."""
 from __future__ import annotations
 
 import json
@@ -26,8 +25,6 @@ class _Bridge(QObject):
 
     @Slot(str, str, str)
     def contextAction(self, action: str, lat: str, lon: str):
-        # Координаты приходят строками: QWebChannel искажает второй подряд
-        # float-аргумент (долгота обнулялась/клампилась в 180). Парсим сами.
         self.context_action.emit(action, float(lat), float(lon))
 
     @Slot(str, str, str)
@@ -52,11 +49,6 @@ class MapView(QWidget):
         self._ready = False
         self._pending: list[str] = []
 
-        # ВАЖНО для macOS: даём контейнеру собственное native NSView, чтобы
-        # WebEngineView внутри него имел стабильную родительскую поверхность
-        # при drag/dock/float операциях. На сам QWebEngineView атрибуты НЕ
-        # ставим — это ломает рендер (карта становится пустой), он сам
-        # управляет своим layer-backed view.
         self.setAttribute(Qt.WA_NativeWindow, True)
 
         lay = QVBoxLayout(self); lay.setContentsMargins(0,0,0,0)
@@ -77,7 +69,6 @@ class MapView(QWidget):
         self._channel.registerObject("bridge", self._bridge)
         self._view.page().setWebChannel(self._channel)
 
-        # Поиск map.html: сначала рядом с модулем, потом в PyInstaller _MEIPASS
         import sys as _sys
         candidates = [
             Path(__file__).parent / "map.html",
@@ -86,8 +77,6 @@ class MapView(QWidget):
         ]
         html_path = next((c for c in candidates if c.exists()), candidates[0])
         url = QUrl.fromLocalFile(str(html_path))
-        # Передаём базовый URL локального тайл-сервера через query, чтобы
-        # Leaflet и тайлы грузились локально (офлайн-режим).
         from PySide6.QtCore import QUrlQuery
         q = QUrlQuery(); q.addQueryItem("base", self._tile_base)
         url.setQuery(q)
@@ -134,11 +123,9 @@ class MapView(QWidget):
         self._js(f"api.flyTo({lat},{lon},{z});")
 
     def center_on(self, lat: float, lon: float):
-        """Переместить центр карты на координаты, сохранив текущий зум."""
         self._js(f"api.centerOn({lat},{lon});")
 
     def set_follow(self, v: bool):
-        """Включить плавное следование карты за самолётом (без рывков)."""
         self._js(f"api.setFollow({'true' if v else 'false'});")
 
     def get_bounds(self, cb: Callable[[dict], None]):

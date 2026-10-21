@@ -31,7 +31,16 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential
+          sudo apt-get install -y build-essential xvfb \
+            libgl1 libegl1 libopengl0 libglx-mesa0 libgl1-mesa-dri libgbm1 libdrm2 \
+            libx11-6 libx11-xcb1 libxcb1 libxcb-xkb1 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-xinerama0 libxcb-xinput0 libxshmfence1 \
+            libxkbcommon0 libxkbcommon-x11-0 \
+            libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libxrender1 libxtst6 \
+            libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+            libasound2 libpango-1.0-0 libcairo2 libatspi2.0-0 libdbus-1-3 \
+            libexpat1 mesa-utils
 
       - name: Install Python dependencies
         run: |
@@ -44,6 +53,31 @@ jobs:
         shell: bash
         run: |
           pyinstaller --noconfirm Avionics.spec
+
+      - name: Smoke test (Linux, software GL under Xvfb)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -o pipefail
+          test -x dist/Avionics/Avionics
+          # В раннере нет GPU — приложение должно само уйти в software-рендер
+          # и НЕ падать с "Failed to create context" / "GLOzone not found".
+          # Таймаут 124 = приложение жило все 40 c, это успех.
+          LOG=$(mktemp)
+          set +e
+          timeout 40 xvfb-run -a dist/Avionics/Avionics >"$LOG" 2>&1
+          CODE=$?
+          set -e
+          cat "$LOG"
+          if grep -Ei "Failed to create context|GLOzone not found|core dumped|Aborted" "$LOG"; then
+            echo "::error::GL/RHI crash detected in smoke test"
+            exit 1
+          fi
+          if [ $CODE -ne 124 ]; then
+            echo "::error::App exited early with code $CODE (expected timeout 124 = still alive)"
+            exit 1
+          fi
+          echo "Smoke test OK: app ran 40s without RHI crash"
 
       - name: Upload artifact (Linux)
         if: runner.os == 'Linux'
